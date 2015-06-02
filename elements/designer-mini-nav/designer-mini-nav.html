@@ -9,9 +9,34 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
 
 <link rel="import" href="../../../polymer/polymer.html">
 
-<dom-module id="designer-file-data">
+<dom-module id="designer-mini-nav">
 
-  <template></template>
+  <style>
+    :host {
+      overflow: visible;
+    }
+    /*
+      TODO(justinfagnani): try to size #small based on the .small light-child
+    */
+    #small {
+      width: 64px;
+      height: 100%;
+      transition: width 300ms;
+      overflow: hidden;
+    }
+    :host(:hover) #small {
+      width: 320px;
+    }
+    #large {
+      width: 320px;
+      height: 100%;
+      display: flex;
+    }
+  </style>
+
+  <template>
+    <div id="small"><div id="large"><content></content></div></div>
+  </template>
 
 </dom-module>
 
@@ -21,24 +46,8 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
   'use strict';
 
   Polymer({
-    is: 'designer-file-data',
-
-    properties: {
-      path: {
-        type: String,
-        notify: true,
-        reflectToAttribute: true,
-      },
-    },
-
-    load() {
-      this.fileSystem.loadFile(this.path).then(function(file) {
-        this.fire('file-data-load', file);
-      }.bind(this));
-    },
-
+    is: 'designer-mini-nav',
   });
 
 })();
-
 </script>

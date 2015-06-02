@@ -10,7 +10,9 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
 <link rel="import" href="../../../polymer/polymer.html">
 <link rel="import" href="../../src/commands/commands.html">
 <link rel="import" href="../../src/css/css.html">
-<link rel="import" href="../designer-document/designer-document.html">
+<link rel="import" href="../../src/dom-utils/dom-utils.html">
+<link rel="import" href="../../src/dragging/dragging.html">
+<link rel="import" href="../../src/protocol/document-client.html">
 <link rel="import" href="../designer-selection/designer-selection.html">
 
 <dom-module id="designer-stage">
@@ -62,15 +64,43 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
       z-index: 104;
       min-width: 4px;
     }
+    #proxy {
+      position: absolute;
+      /* z-index must be > 100 because iframes are z-index 100 o_O */
+      z-index: 101;
+      display: none;
+      opacity: 0.5;
+      background: #f88;
+      box-sizing: border-box;
+      padding: 0;
+      margin: 0;
+    }
+    #proxy > * {
+      width: 100% !important;
+      height: 100% !important;
+      display: block !important;
+      margin: 0;
+    }
 
   </style>
 
   <template>
-    <designer-selection id="selection" on-click="_onSelectionClick"></designer-selection>
+    <designer-selection
+        id="selection"
+        on-click="_onSelectionClick"
+        on-designer-selection-resize="_onSelectionResize"
+        on-designer-selection-move="_onSelectionMove">
+    </designer-selection>
     <div id="hover"></div>
     <div id="caret"></div>
-    <div id="text-edit-selection" on-click="_textOnClick"
-         on-keydown="_onKeydown" on-keypress="_onKeypress" tabindex="0"></div>
+    <div
+        id="text-edit-selection"
+        on-click="_textOnClick"
+        on-keydown="_onKeydown"
+        on-keypress="_onKeypress"
+        tabindex="0">
+    </div>
+    <div id="proxy"></div>
     <div id="glass" on-mousedown="_onMouseDown" on-dblclick="_onDoubleClick"></div>
     <content></content>
   </template>
@@ -80,8 +110,14 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
 <script>
   define([
         'polymer-designer/commands',
-        'polymer-designer/designer-selection/ResizeDirection'],
-      function(commands, ResizeDirection) {
+        'polymer-designer/designer-selection/ResizeDirection',
+        'polymer-designer/dom-utils',
+        'polymer-designer/dragging'],
+      function(
+        commands,
+        ResizeDirection,
+        domUtils,
+        dragging) {
 
     'use strict';
 
@@ -110,6 +146,21 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
           value: null,
         },
 
+        currentNode: {
+          type: Object,
+          notify: true,
+        },
+
+        currentPath: {
+          type: String,
+          notify: true,
+        },
+
+        currentSourceId: {
+          type: String,
+          notify: true,
+        },
+
         /**
          * @type {{x: number, y: number}}
          */
@@ -123,7 +174,7 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
           value: null,
         },
 
-        hoverPath: {
+        hoverSourceId: {
           type: String,
           value: null,
         },
@@ -141,16 +192,18 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
           value: false,
         },
 
-        /** @type {DesignerDocument} a <designer-document> element */
-        document: {
+        domDocument: {
           type: Object,
-          observer: '_documentChanged',
+          observer: '_domDocumentChanged',
         },
 
-        /** @type {DesignerFrame} a <designer-frame> element */
-        frame: {
+        client: {
           type: Object,
         },
+
+        analyzer: {
+          type: Object,
+        }
 
       },
 
@@ -159,29 +212,19 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
       },
 
       ready() {
-        this.$.selection.addEventListener('designer-selection-resize',
-            this._onSelectionResize.bind(this));
         window.addEventListener('mouseup', this._onMouseUp.bind(this));
         this._reset();
       },
 
-      _documentChanged() {
-        if (this.document) {
-          // If the designer-document element that this.document is bound to
-          // ever changed, this would be a memory leak, but it doesn't.
-          this.document.addEventListener('dom-document-changed', function(e) {
-            if (this.document.domDocument) {
-              this._reset();
-            }
-          }.bind(this));
-        }
+      _domDocumentChanged() {
+        this._reset();
       },
 
       _reset() {
         this.currentElementInfo = null;
         this.currentMousePosition = null;
         this.insertPosition = null;
-        this.hoverPath = null;
+        this.hoverSourceId = null;
         this._hideHover();
         this.$.selection.hide();
         this.mode = 'layout';
@@ -189,31 +232,13 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
         this.$.caret.style.display = 'none';
       },
 
-      selectNode(path) {
-        if (this.frame.client !== null) {
-          this.frame.client.selectElementAtPath(path)
-              .then(function(response) {
-                this._updateCurrentElement(response.elementInfo);
-                this._updateSelectionBounds(response.bounds);
-              }.bind(this));
-        }
-      },
-
-      /**
-       * Applies a command to the live document (the frame).
-       *
-       * @param {Command} command
-       */
-      executeCommand(command) {
-        return this.frame.client.sendCommand(command)
-            .then(function(response) {
-              this._updateCurrentElement(response.elementInfo);
-              this._updateSelectionBounds(response.bounds);
-            }.bind(this));
+      applyDocumentUpdate(update) {
+        this._updateCurrentElement(update.elementInfo);
+        this._updateSelectionBounds(update.bounds);
       },
 
       getAnalyzedElement(elementInfo) {
-        return this.document.analyzer.elements[elementInfo.tagName.toLowerCase()];
+        return this.analyzer.elementsByTagName[elementInfo.tagName.toLowerCase()];
       },
 
       _updateSelectionBounds(bounds) {
@@ -229,6 +254,8 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
       _updateCurrentElement(elementInfo) {
         elementInfo.analyzed = this.getAnalyzedElement(elementInfo);
         this.currentElementInfo = elementInfo;
+        this.currentPath = elementInfo.path;
+        this.currentSourceId = elementInfo.sourceId;
 
         // Set the valid resize handles
         var position = elementInfo.position;
@@ -240,12 +267,14 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
           } else if (display === 'inline') {
             selection.directions = [];
           }
+          this.$.proxy.innerHTML = this.currentElementInfo.proxy;
         } else if (position === 'absolute') {
           selection.directions = ResizeDirection.ALL_DIRECTIONS;
         } else {
           console.warn("can't handle position", data.position);
           selection.directions = [];
         }
+
       },
 
       _updateHoverElement(hoverInfo) {
@@ -275,14 +304,14 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
           if (insertAbove) {
             hover.classList.add('insert-above');
             this.insertPosition = commands.InsertPosition.before;
-            this.hoverPath = elementInfo.path;
+            this.hoverSourceId = elementInfo.sourceId;
           } else {
             hover.classList.remove('insert-above');
           }
           if (insertBelow) {
             hover.classList.add('insert-below');
             this.insertPosition = commands.InsertPosition.after;
-            this.hoverPath = elementInfo.path;
+            this.hoverSourceId = elementInfo.sourceId;
           } else {
             hover.classList.remove('insert-below');
           }
@@ -294,7 +323,7 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
         var hoverStyle = hover.style;
         hoverStyle.display = 'none';
         this.insertPosition = null;
-        this.hoverPath = null;
+        this.hoverSourceId = null;
       },
 
       enterTextMode() {
@@ -320,6 +349,14 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
       },
 
       _onSelectionResize(e) {
+        var bounds = e.detail.bounds;
+        this.client.selectionBoundsChanged(bounds)
+          .then(function(response) {
+            this._updateSelectionBounds(response.bounds);
+          }.bind(this));
+      },
+
+      _onSelectionMove(e) {
         // TODO: store mouse position in the selection element?
         // Rationale: we're alredy storing the bounds state there
         var cursor = this.currentMousePosition = {
@@ -327,11 +364,36 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
           y: e.detail.cursor.y - this.offsetTop,
         };
         var bounds = e.detail.bounds;
-        this.frame.client.selectionBoundsChanged(bounds, cursor)
+        this._updateDragProxy(bounds);
+        this.client.selectionBoundsChanged(bounds, cursor)
             .then(function(response) {
-              this._updateSelectionBounds(response.bounds);
+              if (response.commands) {
+                response.commands.forEach(function(command) {
+                  this.fire('designer-command', command);
+                }.bind(this));
+              };
+              if (response.elementInfo) {
+                this._updateCurrentElement(response.elementInfo);
+              }
+              if (response.bounds) {
+                this._updateSelectionBounds(response.bounds);
+              }
               this._updateHoverElement(response.hover);
             }.bind(this));
+      },
+
+      _updateDragProxy(bounds) {
+        var proxy = this.$.proxy;
+        var proxyStyle = proxy.style;
+        if (this.currentElementInfo.position === 'static') {
+          proxyStyle.display = 'block';
+          proxyStyle.top = bounds.top + 'px';
+          proxyStyle.left = bounds.left + 'px';
+          proxyStyle.width = bounds.width + 'px';
+          proxyStyle.height = bounds.height + 'px';
+        } else {
+          proxyStyle.display = 'none';
+        }
       },
 
       _onMouseDown(e) {
@@ -343,7 +405,7 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
         // have a double-click to initiate any action, but the redundant
         // selection that happens here sometimes is ok for now
         var bounds = this.getBoundingClientRect();
-        this.frame.client.selectElementAtPoint(e.clientX, e.clientY, bounds)
+        this.client.selectElementAtPoint(e.clientX, e.clientY, bounds)
             .then(function(response) {
               this._updateCurrentElement(response.elementInfo);
               this._updateSelectionBounds(response.bounds);
@@ -356,19 +418,20 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
 
       _onMouseUp(e) {
         this._mouseDown = false;
-        if (this.hoverPath != null && this.insertPosition != null) {
+        if (this.hoverSourceId != null && this.insertPosition != null) {
           this.fire('designer-command',
             commands.moveElement(
-              this.currentElementInfo.path,
-              this.hoverPath,
+              this.currentElementInfo.sourceId,
+              this.hoverSourceId,
               this.insertPosition));
         }
         this._hideHover();
+        this.$.proxy.style.display = 'none';
       },
 
       _onDoubleClick(e) {
         var bounds = this.getBoundingClientRect();
-        this.frame.client.selectElementAtPoint(e.clientX, e.clientY, bounds)
+        this.client.selectElementAtPoint(e.clientX, e.clientY, bounds)
             .then(function(response) {
               this._updateCurrentElement(response.elementInfo);
               this._updateSelectionBounds(response.bounds);
@@ -378,7 +441,7 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
 
       _onSelectionClick(e) {
         var bounds = this.getBoundingClientRect();
-        this.frame.client.selectElementAtPoint(e.clientX, e.clientY, bounds)
+        this.client.selectElementAtPoint(e.clientX, e.clientY, bounds)
             .then(function(response) {
               this._updateCurrentElement(response.elementInfo);
               this._updateSelectionBounds(response.bounds);
@@ -388,7 +451,7 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
       _textOnClick(e) {
         e.stopPropagation();
         var bounds = this.getBoundingClientRect();
-        this.frame.client.getCaretPosition(e.clientX, e.clientY, bounds)
+        this.client.getCaretPosition(e.clientX, e.clientY, bounds)
           .then(function(response) {
             this._updateCaret(response.rect);
           }.bind(this));
@@ -425,7 +488,7 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
             return;
         }
 
-        this.frame.client.moveCursor(move)
+        this.client.moveCursor(move)
           .then(function(response) {
             this._updateCaret(response.rect);
           }.bind(this));
@@ -442,7 +505,7 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
       _onKeypress(event) {
         var keyCode = event.keyCode;
         var char = String.fromCharCode(keyCode);
-        this.frame.client.insertText(char)
+        this.client.insertText(char)
           .then(function(response) {
             this._updateCaret(response.rect);
           }.bind(this));

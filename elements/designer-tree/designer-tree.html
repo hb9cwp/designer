@@ -8,9 +8,9 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
 -->
 
 <link rel="import" href="../../../polymer/polymer.html">
-<link rel="import" href="designer-directory.html">
+<link rel="import" href="designer-tree-item.html">
 
-<dom-module id="designer-file-tree">
+<dom-module id="designer-tree">
 
   <style>
     :host {
@@ -20,8 +20,11 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
   </style>
 
   <template>
-    <content></content>
-    <designer-directory file-data="{{rootDirectory}}"></designer-directory>
+    <designer-tree-item
+      controller="[[controller]]"
+      data="[[data]]"
+      noicon="[[noicon]]">
+    </designer-tree-item>
   </template>
 
 </dom-module>
@@ -32,19 +35,27 @@ subject to an additional IP rights grant found at http://polymer.github.io/PATEN
   'use strict';
 
   Polymer({
-    is: 'designer-file-tree',
+    is: 'designer-tree',
 
     properties: {
-      rootDirectory: Object,
-      fileSystem: Object,
-    },
 
-    ready() {
-      let fileSystem = Polymer.dom(this).querySelector('*');
-      this.rootDirectory = Polymer.dom(fileSystem).childNodes[0];
-      fileSystem.addEventListener('load', function(e) {
-        this.rootDirectory = Polymer.dom(fileSystem).childNodes[0];
-      }.bind(this));
+      /**
+       * An object for accessing information for rendering a tree item.
+       *
+       * getIcon(node) : Element
+       * getName(node) : String
+       * getChildren(node) : Promise<Array<Object>>
+       * isLeaf(node) : Boolean
+       */
+      controller: Object,
+
+      data: Object,
+
+      noicon: {
+        type: Boolean,
+        value: false,
+      },
+
     },
 
   });
